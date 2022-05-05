@@ -3,10 +3,12 @@ import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import { Output } from "@pulumi/pulumi";
 
+// VPC
 const vpc = new aws.ec2.Vpc("pulumi_vpc", {
     cidrBlock: "10.1.0.0/16"
 })
 
+// Create two public subnets
 const subnets = ['public-sub-1', 'public-sub-2']
 const subnet_cidrs = ["10.1.1.0/24", "10.1.2.0/24"]
 const subnet_ids = []
@@ -17,6 +19,7 @@ for (let i=0; i<subnets.length; i++){
         vpcId: vpc.id,
         cidrBlock: subnet_cidrs[i],
         availabilityZone: az[i],
+        mapPublicIpOnLaunch: true,
         tags: {
             Name: subnets[i]
         }
@@ -24,6 +27,44 @@ for (let i=0; i<subnets.length; i++){
     subnet_ids.push(subnet.id)
 }
 
+// IGW
+
+const igw = new aws.ec2.InternetGateway("igw", {
+    vpcId: vpc.id,
+    tags: {
+        Name: "main",
+    },
+});
+
+// Route Table
+const routeTable = new aws.ec2.RouteTable("public-sub-rtb", {
+    vpcId: vpc.id,
+    routes: [
+        {
+            cidrBlock: "0.0.0.0/0",
+            gatewayId: igw.id,
+        },
+        {
+            ipv6CidrBlock: "::/0",
+            gatewayId: igw.id,
+        },
+    ],
+    tags: {
+        Name: "public-sub-rtb",
+    },
+});
+
+// Route Table Association
+const rtbAssociationNames = ["rtb-asoc-1", "rtb-asoc-2"]
+for (let i = 0; i< subnet_ids.length; i++){
+    const routeTableAssociation = new aws.ec2.RouteTableAssociation(rtbAssociationNames[i], {
+        subnetId: subnet_ids[i],
+        routeTableId: routeTable.id
+    });
+}
+
+
+// EKS Role
 const eksRole = new aws.iam.Role("eksRole", {assumeRolePolicy: `{
     "Version": "2012-10-17",
     "Statement": [
@@ -49,6 +90,7 @@ const example_AmazonEKSVPCResourceController = new aws.iam.RolePolicyAttachment(
     role: eksRole.name,
 });
 
+// EKS Cluster
 const eks = new aws.eks.Cluster("pulumi_cluster", {
     roleArn: eksRole.arn,
     vpcConfig: {
@@ -64,7 +106,7 @@ const eks = new aws.eks.Cluster("pulumi_cluster", {
 export const endpoint = eks.endpoint;
 export const kubeconfig_certificate_authority_data = eks.certificateAuthority.apply(certificateAuthority => certificateAuthority.data);
 
-//-----------Node Group---------
+// EKS Node Group Role
 
 const nodeGroupRole = new aws.iam.Role("nodeGroupRole", {assumeRolePolicy: JSON.stringify({
     Statement: [{
@@ -89,7 +131,9 @@ const example_AmazonEC2ContainerRegistryReadOnly = new aws.iam.RolePolicyAttachm
     role: nodeGroupRole.name,
 });
 
-const nodeGroup = new aws.eks.NodeGroup("example", {
+
+// EKS Node Group
+const nodeGroup = new aws.eks.NodeGroup("my_nodeGroup", {
     clusterName: eks.name,
     nodeRoleArn: nodeGroupRole.arn,
     subnetIds: subnet_ids,
